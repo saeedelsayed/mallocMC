@@ -680,23 +680,27 @@ namespace mallocMC::CreationPolicies::FlatterScatterAlloc
             // we're testing for here. But if this fails already, we save one atomic.
             if(oldFilling < MyPageInterpretation::numChunks(numBytes))
             {
-                uint32_t oldChunkSize = alpaka::atomicCas(acc, &pageTable.chunkSizes[index], 0U, numBytes);
-                chunkSizeCache = oldChunkSize == 0U ? numBytes : oldChunkSize;
-
-                // Now that we know the real chunk size of the page, we can check again if our previous assessment was
-                // correct. But first we need to make sure that we are actually in chunked mode. This will be redundant
-                // with the second check in most situations because we usually would choose a multi-page threshold that
-                // would not switch to multi-page mode while more than one chunk fits on the page but this is a design
-                // decision that could change in the future.
-                if(oldChunkSize < multiPageThreshold()
-                   and oldFilling < MyPageInterpretation::numChunks(chunkSizeCache))
+                auto const secondCheckOldFilling = alpaka::atomicAdd(acc, &pageTable.fillingLevels[index], 1U);
+                if(secondCheckOldFilling < MyPageInterpretation::numChunks(numBytes))
                 {
-                    suitable = isInAllowedRange(acc, chunkSizeCache, numBytes);
+                    uint32_t oldChunkSize = alpaka::atomicCas(acc, &pageTable.chunkSizes[index], 0U, numBytes);
+                    chunkSizeCache = oldChunkSize == 0U ? numBytes : oldChunkSize;
+
+                    // Now that we know the real chunk size of the page, we can check again if our previous assessment was
+                    // correct. But first we need to make sure that we are actually in chunked mode. This will be redundant
+                    // with the second check in most situations because we usually would choose a multi-page threshold that
+                    // would not switch to multi-page mode while more than one chunk fits on the page but this is a design
+                    // decision that could change in the future.
+                    if(oldChunkSize < multiPageThreshold()
+                    and oldFilling < MyPageInterpretation::numChunks(chunkSizeCache))
+                    {
+                        suitable = isInAllowedRange(acc, chunkSizeCache, numBytes);
+                    }
                 }
-            }
-            if(not suitable)
-            {
-                leavePage(acc, index);
+                if(not suitable)
+                {
+                    leavePage(acc, index);
+                }
             }
             return suitable;
         }
@@ -742,7 +746,7 @@ namespace mallocMC::CreationPolicies::FlatterScatterAlloc
         template<typename TAcc>
         ALPAKA_FN_INLINE ALPAKA_FN_ACC auto enterPage(TAcc const& acc, uint32_t const pageIndex) -> uint32_t
         {
-            auto const oldFilling = alpaka::atomicAdd(acc, &pageTable.fillingLevels[pageIndex], 1U);
+            auto const oldFilling = pageTable.fillingLevels[pageIndex];
             // We assume that this page has the correct chunk size. If not, the chunk size is either 0 (and oldFilling
             // must be 0, too) or the next check will fail.
             return oldFilling;
