@@ -673,26 +673,28 @@ namespace mallocMC::CreationPolicies::FlatterScatterAlloc
             uint32_t& chunkSizeCache) -> bool
         {
             bool suitable = false;
-            auto oldFilling = enterPage(acc, index);
+            // auto oldFilling = enterPage(acc, index);
+            auto oldFilling = pageTable.fillingLevels[index];
+            uint32_t oldChunkSize = pageTable.chunkSizes[index];
 
             // At this point, we're only testing against our desired `numBytes`. Due to the `wastefactor` the actual
             // `chunkSize` of the page might be larger and, thus, the actual `numChunks` might be smaller than what
             // we're testing for here. But if this fails already, we save one atomic.
-            if(oldFilling < MyPageInterpretation::numChunks(numBytes))
+            if(oldFilling < MyPageInterpretation::numChunks(numBytes) && ((oldChunkSize >= numBytes && oldChunkSize <= T_HeapConfig::wastefactor * numBytes) || oldChunkSize == 0) )
             {
                 auto const secondCheckOldFilling = alpaka::atomicAdd(acc, &pageTable.fillingLevels[index], 1U);
                 if(secondCheckOldFilling < MyPageInterpretation::numChunks(numBytes))
                 {
-                    uint32_t oldChunkSize = alpaka::atomicCas(acc, &pageTable.chunkSizes[index], 0U, numBytes);
-                    chunkSizeCache = oldChunkSize == 0U ? numBytes : oldChunkSize;
+                    uint32_t secondCheckOldChunkSize = alpaka::atomicCas(acc, &pageTable.chunkSizes[index], 0U, numBytes);
+                    chunkSizeCache = secondCheckOldChunkSize == 0U ? numBytes : secondCheckOldChunkSize;
 
                     // Now that we know the real chunk size of the page, we can check again if our previous assessment was
                     // correct. But first we need to make sure that we are actually in chunked mode. This will be redundant
                     // with the second check in most situations because we usually would choose a multi-page threshold that
                     // would not switch to multi-page mode while more than one chunk fits on the page but this is a design
                     // decision that could change in the future.
-                    if(oldChunkSize < multiPageThreshold()
-                    and oldFilling < MyPageInterpretation::numChunks(chunkSizeCache))
+                    if(chunkSizeCache < multiPageThreshold()
+                    and secondCheckOldFilling < MyPageInterpretation::numChunks(chunkSizeCache))
                     {
                         suitable = isInAllowedRange(acc, chunkSizeCache, numBytes);
                     }
