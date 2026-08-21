@@ -241,7 +241,7 @@ namespace mallocMC::CreationPolicies::FlatterScatterAlloc
     };
 
     constexpr uint32_t defaultBlockSize = 128U * 1024U * 1024U;
-    constexpr uint32_t defaultPageSize = 512U * 1024U;
+    constexpr uint32_t defaultPageSize = 256U * 1024U;
 
     /**
      * @class DefaultHeapConfig

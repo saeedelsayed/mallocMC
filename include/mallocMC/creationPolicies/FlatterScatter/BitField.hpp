@@ -305,21 +305,27 @@ namespace mallocMC::CreationPolicies::FlatterScatterAlloc
             uint32_t const endIndex) -> uint32_t
         {
             auto result = noFreeBitFound();
-            BitMaskStorageType<MyBitMaskSize> oldMask = 0U;
 
-            // This avoids a modulo that's not a power of two and is faster thereby.
-            auto const selectedStartBit = initialGuess >= endIndex ? 0U : initialGuess;
-            for(uint32_t i = selectedStartBit; i < endIndex and result == noFreeBitFound();)
+            uint32_t probingMask = alpaka::ffs(acc, static_cast<std::make_signed_t<BitMaskStorageType<MyBitMaskSize>>>(~mask)) - 1;
+            if(probingMask < endIndex)
             {
-                oldMask = alpaka::atomicOr(acc, &mask, singleBit<MyBitMaskSize>(i));
-                if((oldMask & singleBit<MyBitMaskSize>(i)) == 0U)
-                {
-                    result = i;
-                }
 
-                // In case of no free bit found, this will return -1. Storing it in a uint32_t will underflow and
-                // result in 0xffffffff but that's okay because it also ends the loop as intended.
-                i = alpaka::ffs(acc, static_cast<std::make_signed_t<BitMaskStorageType<MyBitMaskSize>>>(~oldMask)) - 1;
+                BitMaskStorageType<MyBitMaskSize> oldMask = 0U;
+                
+                // This avoids a modulo that's not a power of two and is faster thereby.
+                auto const selectedStartBit = initialGuess >= endIndex ? 0U : initialGuess;
+                for(uint32_t i = selectedStartBit; i < endIndex and result == noFreeBitFound();)
+                {
+                    oldMask = alpaka::atomicOr(acc, &mask, singleBit<MyBitMaskSize>(i));
+                    if((oldMask & singleBit<MyBitMaskSize>(i)) == 0U)
+                    {
+                        result = i;
+                    }
+                    
+                    // In case of no free bit found, this will return -1. Storing it in a uint32_t will underflow and
+                    // result in 0xffffffff but that's okay because it also ends the loop as intended.
+                    i = alpaka::ffs(acc, static_cast<std::make_signed_t<BitMaskStorageType<MyBitMaskSize>>>(~oldMask)) - 1;
+                }
             }
 
             return result;
