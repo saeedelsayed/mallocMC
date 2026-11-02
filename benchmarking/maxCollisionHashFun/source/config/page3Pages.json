@@ -1,0 +1,9 @@
+{
+    "allocSize": 8192,
+    "noOfMeasurements": 1,
+    "maxNoOfTHreads": 10000,
+    "noOfChunks": 0,
+    "noOfPages": 4095,
+    "requiredPages": 1,
+    "maskSize": 32
+}

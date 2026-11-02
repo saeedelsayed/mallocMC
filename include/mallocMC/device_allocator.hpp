@@ -30,6 +30,7 @@
 #pragma once
 
 #include "mallocMC_traits.hpp"
+#include "mallocMC_utils.hpp"
 
 #include <alpaka/core/Common.hpp>
 
@@ -68,7 +69,7 @@ namespace mallocMC
         using AlignmentPolicy = T_AlignmentPolicy;
 
         template<typename AlpakaAcc>
-        ALPAKA_FN_ACC auto malloc(AlpakaAcc const& acc, size_t bytes) -> void*
+        ALPAKA_FN_ACC auto malloc(AlpakaAcc const& acc, size_t bytes, uint16_t* warpArray, uint16_t* smArray, uint16_t* allocSizeArray) -> void*
         {
             if(bytes == 0U)
             {
@@ -78,6 +79,16 @@ namespace mallocMC
             DistributionPolicy distributionPolicy(acc);
             uint32 const req_size = distributionPolicy.collect(acc, bytes);
             void* memBlock = CreationPolicy::template AlignmentAwarePolicy<T_AlignmentPolicy>::create(acc, req_size);
+
+            auto const id = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];
+
+            // printf("warpID: %d",warpid(acc));
+            // printf("smID: %d\n",smid(acc)); 
+
+            warpArray[id] = warpid(acc);
+            smArray[id] = smid(acc);
+            allocSizeArray[id] = bytes;
+
             if(CreationPolicy::isOOM(memBlock, req_size))
             {
                 memBlock = OOMPolicy::handleOOM(memBlock);

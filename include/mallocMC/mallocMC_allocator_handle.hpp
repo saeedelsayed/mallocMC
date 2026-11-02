@@ -40,9 +40,9 @@ namespace mallocMC
         DevAllocator* devAllocator;
 
         template<typename AlpakaAcc>
-        ALPAKA_FN_ACC auto malloc(AlpakaAcc const& acc, size_t size) const -> void*
+        ALPAKA_FN_ACC auto malloc(AlpakaAcc const& acc, size_t size, uint16_t* warpArray, uint16_t* smArray, uint16_t* allocSizeArray) const -> void*
         {
-            return devAllocator->malloc(acc, size);
+            return devAllocator->malloc(acc, size, warpArray, smArray, allocSizeArray);
         }
 
         template<typename AlpakaAcc>

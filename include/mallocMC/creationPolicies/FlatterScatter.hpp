@@ -312,10 +312,23 @@ namespace mallocMC::CreationPolicies::FlatterScatterAlloc
         template<uint32_t T_pageSize, typename TAcc>
         ALPAKA_FN_INLINE ALPAKA_FN_ACC static auto hash(TAcc const& acc, uint32_t const numBytes) -> uint32_t
         {
-            uint32_t const relative_offset = warpSize<TAcc> * numBytes / T_pageSize;
-            return (
-                numBytes * hashingK + hashingDistMP * smid(acc)
-                + (hashingDistWP + hashingDistWPRel * relative_offset) * warpid(acc));
+            // uint32_t const relative_offset = warpSize<TAcc> * numBytes / T_pageSize;
+            // return (
+            //     numBytes * hashingK + hashingDistMP * smid(acc)
+            //     + (hashingDistWP + hashingDistWPRel * relative_offset) * warpid(acc));
+
+            uint32_t hashValue = 0;
+            hashValue |= (0b11111) & smid(acc);
+            // uint16_t x = smid(acc);
+            // std::cout << "sm id: " << x ;
+
+            uint32_t c = numBytes + warpid(acc) + smid(acc);
+
+            uint32_t h = (a * c + b) % p;
+
+            hashValue |= (h << 5);
+
+            return hashValue;
         }
 
     private:
@@ -323,6 +336,10 @@ namespace mallocMC::CreationPolicies::FlatterScatterAlloc
         static constexpr uint32_t hashingDistMP = 17497;
         static constexpr uint32_t hashingDistWP = 1;
         static constexpr uint32_t hashingDistWPRel = 1;
+
+        static constexpr uint32_t a = 10601;
+        static constexpr uint32_t b = 1003001;
+        static constexpr uint32_t p = 5070007;
     };
 
     /**

@@ -39,7 +39,10 @@
 #include <numeric>
 #include <chrono>
 #include <fstream>
+#include <nlohmann/json.hpp>
 
+
+using json = nlohmann::json;
 
 using mallocMC::CreationPolicies::FlatterScatter;
 
@@ -49,15 +52,17 @@ using Idx = std::size_t;
 // Define the device accelerator
 using Acc = alpaka::ExampleDefaultAcc<Dim, Idx>;
 
-constexpr uint32_t const blocksize = 16U * 1024U * 1024U;
-constexpr uint32_t const pagesize = 4U * 1024U;
+constexpr uint32_t const blocksize = 128U * 1024U * 1024U;
+constexpr uint32_t const pagesize = 128U * 1024U;
 constexpr uint32_t const wasteFactor = 1U;
-constexpr uint32_t const allocSize = 128U;
-constexpr uint32_t const noOfMeasurements = 1000U;
-constexpr uint32_t const maxNoOfTHreads = 100U;
-constexpr uint32_t const noOfChunks = 31;
-constexpr uint32_t const requiredPages = 1;
-constexpr uint32_t const maskSize = 32;
+uint32_t allocSize = 3200U;
+uint32_t noOfMeasurements = 1U;
+uint32_t maxNoOfTHreads = 1U;
+uint32_t noOfChunks = 31;
+uint32_t noOfPages = 4095;
+uint32_t requiredPages = 1;
+uint32_t fittedThreadsInBlock = noOfPages / requiredPages;
+uint32_t maskSize = 32;
 
 
 // This happens to also work for the original Scatter algorithm, so we only define one.
@@ -71,16 +76,16 @@ struct FlatterScatterHeapConfig : FlatterScatter<>::Properties::HeapConfig
     static constexpr auto wastefactor = wasteFactor;
 };
 
-struct FlatterScatterHashConfig : FlatterScatter<>::Properties::HashConfig
-{
-    static constexpr uint32_t blockStride = 0;
+// struct FlatterScatterHashConfig : FlatterScatter<>::Properties::HashConfig
+// {
+//     static constexpr uint32_t blockStride = 0;
 
-    template<uint32_t T_pageSize, typename TAcc>
-    ALPAKA_FN_INLINE ALPAKA_FN_ACC static auto hash(TAcc const& acc, uint32_t const numBytes) -> uint32_t
-    {
-        return 0;
-    }
-};
+//     template<uint32_t T_pageSize, typename TAcc>
+//     ALPAKA_FN_INLINE ALPAKA_FN_ACC static auto hash(TAcc const& acc, uint32_t const numBytes) -> uint32_t
+//     {
+//         return 0;
+//     }
+// };
 
 struct XMallocConfig
 {
@@ -125,9 +130,9 @@ auto maxCollisionHashFun() -> int
         int globalAtomicsSum = 0;
 
         auto allocArray
-            = [] ALPAKA_FN_ACC(Acc const& acc, int x, Allocator::AllocatorHandle allocHandle)
+            = [] ALPAKA_FN_ACC(Acc const& acc, int x, uint16_t* warpArray, uint16_t* smArray, uint16_t* allocSizeArray, Allocator::AllocatorHandle allocHandle)
         {
-            arA<Acc> = static_cast<int**>(allocHandle.malloc(acc, sizeof(int*) * x));
+            arA<Acc> = static_cast<int**>(allocHandle.malloc(acc, sizeof(int*) * x, warpArray, smArray, allocSizeArray));
         };
 
         auto freeArray
@@ -137,11 +142,11 @@ auto maxCollisionHashFun() -> int
         };
 
         auto allocMemory
-            = [] ALPAKA_FN_ACC(Acc const& acc, Allocator::AllocatorHandle allocHandle)
+            = [] ALPAKA_FN_ACC(Acc const& acc, uint16_t* warpArray, uint16_t* smArray, uint16_t* allocSizeArray, Allocator::AllocatorHandle allocHandle)
         {
             auto const id = alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0];
             // printf("alloc ");
-            arA<Acc>[id] = static_cast<int*>(allocHandle.malloc(acc, allocSize));
+            arA<Acc>[id] = static_cast<int*>(allocHandle.malloc(acc, 16, warpArray, smArray, allocSizeArray));
         };
 
         auto freeMemory
@@ -153,13 +158,36 @@ auto maxCollisionHashFun() -> int
         };
 
         Allocator scatterAlloc(dev, queue, heapSize); // 2GB for device-side malloc
-        std::array<uint32_t, maxNoOfTHreads> arrayOfThreads{};
+        std::vector<uint32_t> arrayOfThreads(maxNoOfTHreads);
 
-        uint32_t noOfThreads = 1;
-        for(auto& thread : arrayOfThreads)
-        {
-            thread = noOfThreads++;
-        }
+        // uint32_t noOfThreads = 1;
+        // for(auto& thread : arrayOfThreads)
+        // {
+        //     thread = noOfThreads;
+        //     noOfThreads = noOfThreads + 1;
+        //     // printf("thread count: %d\n", thread);
+        // }
+
+        static constexpr uint32_t threadsCount = 1000000;
+
+
+        auto warpArrayDevice = alpaka::allocBuf<uint16_t, Idx>(dev, Idx{threadsCount});
+        auto smArrayDevice = alpaka::allocBuf<uint16_t, Idx>(dev, Idx{threadsCount});
+        auto allocSizeArrayDevice = alpaka::allocBuf<uint16_t, Idx>(dev, Idx{threadsCount});
+
+        auto const hostPlatform = alpaka::Platform<alpaka::DevCpu>{};
+        auto const hostDev = alpaka::getDevByIdx(hostPlatform, 0);
+        auto warpArrayHost = alpaka::allocBuf<uint16_t, Idx>(hostDev, Idx{threadsCount});
+        auto smArrayHost = alpaka::allocBuf<uint16_t, Idx>(hostDev, Idx{threadsCount});
+        auto allocSizeArrayHost = alpaka::allocBuf<uint16_t, Idx>(hostDev, Idx{threadsCount});
+
+        auto* warpArray = alpaka::getPtrNative(warpArrayDevice);
+        auto* smArray = alpaka::getPtrNative(smArrayDevice);
+        auto* allocSizeArray = alpaka::getPtrNative(allocSizeArrayDevice);
+
+        std::fstream gpuData;
+        gpuData.open("threadIDs.csv", std::ios::out | std::ios::app);
+        gpuData << "thread id, warp id, sm id, alloc size\n";
 
         std::ofstream csv("results.csv");
         csv << "thread_count";
@@ -172,37 +200,50 @@ auto maxCollisionHashFun() -> int
         initHeap<Acc>(dev, queue, scatterAlloc.getAllocatorHandle().devAllocator, scatterAlloc.getHeapLocations()[0].p ,heapSize);
 
         auto const workDivSingle = alpaka::WorkDivMembers<Dim, Idx>{Idx{1}, Idx{1}, Idx{1}};
+        // printf("alloc size: %d\n", allocSize);
 
-        for(auto const& thread: arrayOfThreads)
-        {
-            auto const workDiv = alpaka::WorkDivMembers<Dim, Idx>{Idx{thread}, Idx{1}, Idx{1}};
-            std::cout << "Number Of Threads: " << thread << '\n';
-            std::array<std::chrono::duration<double>, noOfMeasurements> measurements {};
+        // for(auto const& thread: arrayOfThreads)
+        // {
+
+            // uint32_t thread = 1;
+            auto const workDiv = alpaka::WorkDivMembers<Dim, Idx>{Idx{threadsCount}, Idx{1}, Idx{1}};
+            std::cout << "Number Of Threads: " << threadsCount << '\n';
+            std::vector<std::chrono::duration<double>> measurements(noOfMeasurements);
 
             for(auto& measurement : measurements)
             {
+
+            // auto bufDevice = allocBuf<int*, Idx>(dev, sizeof(int*) * threadsCount);
+            // auto arrayPointer = alpaka::getPtrNative(bufDevice);
                 alpaka::enqueue(
                     queue,
                     alpaka::createTaskKernel<Acc>(
                         workDivSingle,
                         allocArray,
-                        thread,
+                        threadsCount,
+                        warpArray,
+                        smArray,
+                        allocSizeArray,
                         scatterAlloc.getAllocatorHandle()
                     )
                 );
+                
+                const auto start = std::chrono::high_resolution_clock::now();
 
                 alpaka::enqueue(
                     queue,
                     alpaka::createTaskKernel<Acc>(
                         workDiv,
                         allocMemory,
+                        warpArray,
+                        smArray,
+                        allocSizeArray,
                         scatterAlloc.getAllocatorHandle()
                     )
                 );
 
-                std::cout << "New measurement\n";
-                
-                const auto start = std::chrono::high_resolution_clock::now();
+                const auto end = std::chrono::high_resolution_clock::now();
+                measurement = end - start;
 
                 alpaka::enqueue(
                     queue,
@@ -212,52 +253,95 @@ auto maxCollisionHashFun() -> int
                         scatterAlloc.getAllocatorHandle()
                     )
                 );
-
-                const auto end = std::chrono::high_resolution_clock::now();
-                measurement = end - start;
                 
-                alpaka::enqueue(
-                    queue,
-                    alpaka::createTaskKernel<Acc>(
-                        workDivSingle,
-                        freeArray,
-                        scatterAlloc.getAllocatorHandle()
-                    )
-                );
+                // alpaka::enqueue(
+                //     queue,
+                //     alpaka::createTaskKernel<Acc>(
+                //         workDivSingle,
+                //         freeArray,
+                //         scatterAlloc.getAllocatorHandle()
+                //     )
+                // );
 
             }
-            std::copy(measurements.cbegin(), measurements.cend(), std::ostream_iterator<std::chrono::duration<double>>(std::cout, ", "));
-            std::cout << "\n";
+            alpaka::memcpy(queue, warpArrayHost, warpArrayDevice, Idx{threadsCount});
+            alpaka::memcpy(queue, smArrayHost, smArrayDevice, Idx{threadsCount});
+            alpaka::memcpy(queue, allocSizeArrayHost, allocSizeArrayDevice, Idx{threadsCount});
+            alpaka::wait(queue);
+
+            auto const* warpArrayData = alpaka::getPtrNative(warpArrayHost);
+            auto const* smArrayData = alpaka::getPtrNative(smArrayHost);
+            auto const* allocSizeArrayData = alpaka::getPtrNative(allocSizeArrayHost);
+
+            // std::copy(measurements.cbegin(), measurements.cend(), std::ostream_iterator<std::chrono::duration<double>>(std::cout, ", "));
+            // std::cout << "\n";
             auto mean = std::reduce(measurements.cbegin(), measurements.cend()) / noOfMeasurements;
-            std::cout << "mean: " << mean << "\n";
+            // std::cout << "mean: " << mean << "\n";
 
             int localAtomicsSum = 0;
 
-            for (int i = 0; i < thread; i++)
-            {
-                localAtomicsSum += 4 + ((i % noOfChunks) > 0 ? 0 : 3);
-            }
+            // for(int i = 0; i < thread; i++)
+            // {
+            //     int threadLocalIndex = i % fittedThreadsInBlock; 
+            //     int insideBlock = threadLocalIndex * requiredPages + 2 * requiredPages;
+            //     int outsizeBlock = (i / fittedThreadsInBlock) * (noOfPages - requiredPages + 1);
+            //     int sum = insideBlock + outsizeBlock; 
+            //     localAtomicsSum += sum;
+            // }
             
-            localAtomicsSum *= noOfMeasurements;
-            globalAtomicsSum += localAtomicsSum;
+            // localAtomicsSum *= noOfMeasurements;
+            // globalAtomicsSum += localAtomicsSum;
 
-            csv << thread;
+
+            csv << threadsCount;
             for(auto const& m : measurements)
                 csv << "," << m.count();
             csv << "," << mean.count();
             csv << "," << localAtomicsSum/noOfMeasurements << "\n";
-        }
 
-        std::cout << "Total number of atmoic operations: " << globalAtomicsSum << '\n';
+            for(int i = 0; i < threadsCount; i++)
+            {
+                gpuData << i << ", ";
+                gpuData << warpArrayData[i] << ", ";
+                gpuData << smArrayData[i] << ", ";
+                gpuData << allocSizeArrayData[i] << "\n";
+            }
+
+        // std::cout << "Total number of atmoic operations: " << globalAtomicsSum << '\n';
 
     }
 
     return 0;
 }
 
-auto main(int /*argc*/, char* /*argv*/[]) -> int
+auto main(int argc, char* argv[]) -> int
 {
-    maxCollisionHashFun<FlatterScatter<FlatterScatterHeapConfig, FlatterScatterHashConfig>, mallocMC::ReservePoolPolicies::AlpakaBuf<Acc>>();
+    if(argc != 2)
+    {
+        std::cerr << "Usage: benchmark config.json\n";
+        return 1;
+    }
+
+    std::string filename;
+    filename = argv[1];
+
+    std::ifstream file(filename);
+
+    json j;
+    file >> j;
+
+    allocSize = j["allocSize"];
+    noOfMeasurements = j["noOfMeasurements"];
+    maxNoOfTHreads = j["maxNoOfTHreads"];
+    noOfChunks = j["noOfChunks"];
+    noOfPages = j["noOfPages"];
+    requiredPages = j["requiredPages"];
+    maskSize = j["maskSize"];
+    fittedThreadsInBlock = noOfPages / requiredPages;
+
+    // allocSize = 32U;
+    
+    maxCollisionHashFun<FlatterScatter<FlatterScatterHeapConfig/*, FlatterScatterHashConfig*/>, mallocMC::ReservePoolPolicies::AlpakaBuf<Acc>>();
 
     return 0;
 }
